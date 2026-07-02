@@ -116,6 +116,33 @@ passwords, API keys, tokens, payment data, or other secrets. Disable it with:
 MEMORY_EXTRACTION=0 OLLAMA_MODEL=qwen3:8b node server.mjs
 ```
 
+## Language Tutor
+
+The app includes a first local tutor mode for English and Kazakh. It stores
+learning progress in `data/store.json` under `learning`.
+
+Try:
+
+```text
+Teach me Kazakh
+Quiz me in Kazakh
+Practice Kazakh pronunciation
+Correct this Kazakh sentence: Мен қазақша үйренем
+Show my progress
+Stop tutor mode
+```
+
+Tutor mode tracks:
+
+- target languages per learner
+- introduced words
+- weak words
+- quiz correct/wrong counts
+- active lesson or quiz prompt
+
+The first version ships with a small seed vocabulary in `server.mjs`. Better
+teaching materials can be added later as JSON or Markdown lesson packs.
+
 ## Web Search
 
 Web search is enabled by default and uses read-only DuckDuckGo HTML results. Ask

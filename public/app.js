@@ -13,9 +13,11 @@ const refs = {
   profiles: document.querySelector("#profiles"),
   workflows: document.querySelector("#workflows"),
   memories: document.querySelector("#memories"),
+  learners: document.querySelector("#learners"),
   profileCount: document.querySelector("#profileCount"),
   workflowCount: document.querySelector("#workflowCount"),
   memoryCount: document.querySelector("#memoryCount"),
+  learnerCount: document.querySelector("#learnerCount"),
   languageSelect: document.querySelector("#languageSelect"),
   eventLog: document.querySelector("#eventLog"),
   clearLogButton: document.querySelector("#clearLogButton")
@@ -39,7 +41,10 @@ const state = {
   memory: {
     profiles: [],
     workflows: [],
-    memories: []
+    memories: [],
+    learning: {
+      learners: []
+    }
   },
   speech: null
 };
@@ -119,6 +124,28 @@ function memoryMeta(memory) {
   return parts.join(" · ");
 }
 
+function languageName(code) {
+  if (code === "kk") return "Kazakh";
+  if (code === "en") return "English";
+  if (code === "ru") return "Russian";
+  return code || "Auto";
+}
+
+function learnerSummary(learner) {
+  const languages = Object.values(learner.languages || {});
+  if (!languages.length) return "No lessons yet";
+  return languages
+    .map((language) => {
+      const stats = language.stats || {};
+      const words = language.knownWords?.length || 0;
+      const weak = language.weakWords?.length || 0;
+      const correct = Number(stats.correct || 0);
+      const wrong = Number(stats.wrong || 0);
+      return `${languageName(language.targetLanguage)} ${language.level || "A1"} · ${words} words · ${weak} weak · ${correct}/${correct + wrong || 0} correct`;
+    })
+    .join(" | ");
+}
+
 async function apiJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -152,9 +179,11 @@ async function refreshMemory() {
   refs.profileCount.textContent = String(state.memory.profiles.length);
   refs.workflowCount.textContent = String(state.memory.workflows.length);
   refs.memoryCount.textContent = String((state.memory.memories || []).length);
+  refs.learnerCount.textContent = String((state.memory.learning?.learners || []).length);
   refs.profiles.innerHTML = "";
   refs.workflows.innerHTML = "";
   refs.memories.innerHTML = "";
+  refs.learners.innerHTML = "";
 
   for (const profile of state.memory.profiles) {
     const item = document.createElement("div");
@@ -185,6 +214,18 @@ async function refreshMemory() {
       <p>${escapeHtml(memory.text)}</p>
     `;
     refs.memories.append(item);
+  }
+
+  for (const learner of state.memory.learning?.learners || []) {
+    const active = learner.active?.targetLanguage ? `Active: ${languageName(learner.active.targetLanguage)}` : "Idle";
+    const item = document.createElement("div");
+    item.className = "item";
+    item.innerHTML = `
+      <strong>${escapeHtml(learner.name || "Learner")}</strong>
+      <p>${escapeHtml(active)}</p>
+      <p>${escapeHtml(learnerSummary(learner))}</p>
+    `;
+    refs.learners.append(item);
   }
 }
 
@@ -394,6 +435,9 @@ async function runLocalAssistantTurn(text, language = selectedLanguage(), speake
   }
   if (response.extractedMemories?.length) {
     appendMessage("system", `Saved ${response.extractedMemories.length} long-term memory item${response.extractedMemories.length === 1 ? "" : "s"}.`);
+  }
+  if (response.mode === "tutor") {
+    appendLog({ tutorMode: true });
   }
   state.lastReply = response.reply;
   state.lastReplyLanguage = response.language || language;

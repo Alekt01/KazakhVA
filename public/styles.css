@@ -189,7 +189,7 @@ h2 {
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(260px, 0.75fr));
+  grid-template-columns: minmax(360px, 1.3fr) repeat(4, minmax(220px, 0.65fr));
   gap: 16px;
   align-items: start;
 }

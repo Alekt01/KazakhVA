@@ -89,7 +89,10 @@ const mimeTypes = {
 const defaultStore = {
   profiles: [],
   workflows: [],
-  memories: []
+  memories: [],
+  learning: {
+    learners: []
+  }
 };
 
 function findCommand(candidates) {
@@ -155,15 +158,37 @@ async function readJsonBody(req) {
   return JSON.parse(raw.toString("utf8"));
 }
 
+function freshDefaultStore() {
+  return structuredClone(defaultStore);
+}
+
+function normalizeStoreShape(store = {}) {
+  const defaults = freshDefaultStore();
+  const normalized = {
+    ...defaults,
+    ...store,
+    profiles: Array.isArray(store.profiles) ? store.profiles : [],
+    workflows: Array.isArray(store.workflows) ? store.workflows : [],
+    memories: Array.isArray(store.memories) ? store.memories : [],
+    learning: {
+      ...defaults.learning,
+      ...(store.learning && typeof store.learning === "object" ? store.learning : {})
+    }
+  };
+  if (!Array.isArray(normalized.learning.learners)) normalized.learning.learners = [];
+  return normalized;
+}
+
 async function readStore() {
   await mkdir(dataDir, { recursive: true });
   try {
     const raw = await readFile(storePath, "utf8");
-    return { ...defaultStore, ...JSON.parse(raw) };
+    return normalizeStoreShape(JSON.parse(raw));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    await writeStore(defaultStore);
-    return structuredClone(defaultStore);
+    const store = freshDefaultStore();
+    await writeStore(store);
+    return store;
   }
 }
 
@@ -1019,7 +1044,26 @@ function summarizeMemory(store) {
         })
         .join("\n")
     : "No long-term memories saved yet.";
-  return `People:\n${profiles}\n\nWorkflows:\n${workflows}\n\nLong-term memories:\n${memories}`;
+  const learning = summarizeLearning(store);
+  return `People:\n${profiles}\n\nWorkflows:\n${workflows}\n\nLong-term memories:\n${memories}\n\nLearning:\n${learning}`;
+}
+
+function summarizeLearning(store) {
+  const learning = ensureLearningStore(store);
+  if (!learning.learners.length) return "No language learning profiles yet.";
+  return learning.learners
+    .map((learner) => {
+      const languagesSummary = Object.values(learner.languages || {}).map((languageMemory) => {
+        const material = tutorMaterials[languageMemory.targetLanguage] || { label: languageMemory.targetLanguage };
+        const words = languageMemory.knownWords?.length || 0;
+        const weak = languageMemory.weakWords?.length || 0;
+        const correct = languageMemory.stats?.correct || 0;
+        const wrong = languageMemory.stats?.wrong || 0;
+        return `${material.label}: level ${languageMemory.level || "A1"}, ${words} words, ${weak} weak, ${correct}/${correct + wrong || 0} correct`;
+      });
+      return `${learner.name}: ${languagesSummary.length ? languagesSummary.join("; ") : "no target language yet"}`;
+    })
+    .join("\n");
 }
 
 function parseJsonishArray(value) {
@@ -1667,6 +1711,386 @@ function findWorkflow(text, workflows) {
   return bestMatch?.workflow || null;
 }
 
+const tutorMaterials = {
+  kk: {
+    label: "Kazakh",
+    nativeName: "Қазақша",
+    script: "Cyrillic",
+    seedLevel: "A1",
+    vocabulary: [
+      { source: "hello", target: "сәлем", example: "Сәлем, қалайсың?" },
+      { source: "thank you", target: "рақмет", example: "Көмегіңе рақмет." },
+      { source: "yes", target: "иә", example: "Иә, мен дайынмын." },
+      { source: "no", target: "жоқ", example: "Жоқ, мен түсінбедім." },
+      { source: "I am learning Kazakh", target: "Мен қазақша үйреніп жүрмін.", example: "Мен қазақша үйреніп жүрмін." },
+      { source: "What is your name?", target: "Сенің атың кім?", example: "Сенің атың кім?" },
+      { source: "My name is Alexei", target: "Менің атым Алексей.", example: "Менің атым Алексей." },
+      { source: "How are you?", target: "Қалайсың?", example: "Сәлем, қалайсың?" },
+      { source: "good", target: "жақсы", example: "Мен жақсымын." },
+      { source: "today", target: "бүгін", example: "Бүгін ауа райы жақсы." }
+    ],
+    pronunciation: [
+      { focus: "ә", expected: "Сәлем, мен қазақша үйреніп жүрмін." },
+      { focus: "қ", expected: "Қазақ тілі қызық." },
+      { focus: "ң", expected: "Менің атым Алексей." },
+      { focus: "ұ", expected: "Бұл дұрыс жауап." }
+    ]
+  },
+  en: {
+    label: "English",
+    nativeName: "English",
+    script: "Latin",
+    seedLevel: "A1",
+    vocabulary: [
+      { source: "сәлем", target: "hello", example: "Hello, how are you?" },
+      { source: "рақмет", target: "thank you", example: "Thank you for your help." },
+      { source: "иә", target: "yes", example: "Yes, I am ready." },
+      { source: "жоқ", target: "no", example: "No, I do not understand." },
+      { source: "Мен ағылшын тілін үйреніп жүрмін.", target: "I am learning English.", example: "I am learning English every day." },
+      { source: "Сенің атың кім?", target: "What is your name?", example: "What is your name?" },
+      { source: "Менің атым Алексей.", target: "My name is Alexei.", example: "My name is Alexei." },
+      { source: "Қалайсың?", target: "How are you?", example: "How are you today?" },
+      { source: "жақсы", target: "good", example: "I feel good today." },
+      { source: "бүгін", target: "today", example: "Today I will practice speaking." }
+    ],
+    pronunciation: [
+      { focus: "th", expected: "Thank you for helping me." },
+      { focus: "w", expected: "What do you want to learn today?" },
+      { focus: "short answer", expected: "I am learning English." }
+    ]
+  }
+};
+
+function ensureLearningStore(store) {
+  if (!store.learning || typeof store.learning !== "object") store.learning = { learners: [] };
+  if (!Array.isArray(store.learning.learners)) store.learning.learners = [];
+  return store.learning;
+}
+
+function learnerKey(context = {}) {
+  if (context.speaker?.recognized && cleanProfileName(context.speaker.name)) {
+    return `speaker:${normalizeForMatching(context.speaker.name)}`;
+  }
+  return "default";
+}
+
+function learnerName(context = {}) {
+  if (context.speaker?.recognized && cleanProfileName(context.speaker.name)) return cleanProfileName(context.speaker.name);
+  return "Default learner";
+}
+
+function getLearner(store, context = {}) {
+  const learning = ensureLearningStore(store);
+  const key = learnerKey(context);
+  let learner = learning.learners.find((entry) => entry.key === key);
+  if (!learner) {
+    learner = {
+      id: crypto.randomUUID(),
+      key,
+      name: learnerName(context),
+      nativeLanguage: "auto",
+      languages: {},
+      active: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    learning.learners.push(learner);
+  }
+  if (context.speaker?.recognized) learner.name = learnerName(context);
+  return learner;
+}
+
+function getLearningLanguage(learner, targetLanguage) {
+  const language = normalizeTutorLanguage(targetLanguage, "kk");
+  if (!learner.languages[language]) {
+    learner.languages[language] = {
+      targetLanguage: language,
+      level: tutorMaterials[language]?.seedLevel || "A1",
+      knownWords: [],
+      weakWords: [],
+      lessonHistory: [],
+      stats: {
+        correct: 0,
+        wrong: 0
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+  return learner.languages[language];
+}
+
+function normalizeTutorLanguage(value, fallback = "kk") {
+  const normalized = normalizeForMatching(value);
+  if (!normalized) return fallback;
+  if (["kk", "kazakh", "қазақ", "қазақша", "казак", "казахский"].some((token) => normalized.includes(token))) return "kk";
+  if (["en", "english", "ағылшын", "агылшын", "английский"].some((token) => normalized.includes(token))) return "en";
+  return fallback;
+}
+
+function detectTutorLanguage(text, requestedLanguage = "auto", learner = null) {
+  const normalized = normalizeForMatching(text);
+  if (["kazakh", "қазақ", "қазақша", "казак", "казахский"].some((token) => normalized.includes(token))) return "kk";
+  if (["english", "ағылшын", "агылшын", "английский"].some((token) => normalized.includes(token))) return "en";
+  if (learner?.active?.targetLanguage) return learner.active.targetLanguage;
+  const requested = normalizeLanguage(requestedLanguage);
+  if (requested === "kk" || requested === "en") return requested;
+  return "kk";
+}
+
+function parseTutorCommand(text, language = "auto", learner = null) {
+  const normalized = normalizeForMatching(text);
+  const activePending = learner?.active?.pending;
+  if (hasAnyPhrase(normalized, ["stop lesson", "stop tutor", "end lesson", "quit lesson", "сабақты тоқтат", "урок стоп"])) {
+    return { kind: "stop", targetLanguage: learner?.active?.targetLanguage || detectTutorLanguage(text, language, learner) };
+  }
+  if (hasAnyPhrase(normalized, ["learning progress", "tutor progress", "my progress", "оқу барысы", "прогресс"])) {
+    return { kind: "progress", targetLanguage: detectTutorLanguage(text, language, learner) };
+  }
+  if (hasAnyPhrase(normalized, ["quiz me", "test me", "review words", "vocabulary quiz", "сөздерді тексер", "проверь слова"])) {
+    return { kind: "quiz", targetLanguage: detectTutorLanguage(text, language, learner) };
+  }
+  if (hasAnyPhrase(normalized, ["pronunciation", "repeat practice", "practice sounds", "дыбыстау", "произношение"])) {
+    return { kind: "pronunciation", targetLanguage: detectTutorLanguage(text, language, learner) };
+  }
+  if (hasAnyPhrase(normalized, ["teach me", "start lesson", "language lesson", "learn kazakh", "learn english", "practice kazakh", "practice english", "қазақша үйрет", "ағылшын үйрет", "үйренгім келеді", "урок"])) {
+    return { kind: "lesson", targetLanguage: detectTutorLanguage(text, language, learner) };
+  }
+  if (hasAnyPhrase(normalized, ["correct my", "correct this", "explain this", "grammar check", "түзет", "исправь"])) {
+    return { kind: "correct", targetLanguage: detectTutorLanguage(text, language, learner) };
+  }
+  if (activePending) {
+    return { kind: "answer", targetLanguage: learner.active.targetLanguage };
+  }
+  return null;
+}
+
+function wordKey(word) {
+  return normalizeForMatching(`${word.source} ${word.target}`);
+}
+
+function upsertLearningWord(languageMemory, word, status = "introduced") {
+  const key = wordKey(word);
+  let entry = languageMemory.knownWords.find((item) => item.key === key);
+  if (!entry) {
+    entry = {
+      key,
+      source: word.source,
+      target: word.target,
+      example: word.example || "",
+      correct: 0,
+      wrong: 0,
+      status,
+      introducedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    languageMemory.knownWords.push(entry);
+  } else {
+    entry.updatedAt = new Date().toISOString();
+    if (word.example && !entry.example) entry.example = word.example;
+  }
+  languageMemory.updatedAt = new Date().toISOString();
+  return entry;
+}
+
+function chooseLessonWords(languageMemory, targetLanguage, count = 5) {
+  const materials = tutorMaterials[targetLanguage] || tutorMaterials.kk;
+  const seen = new Set(languageMemory.knownWords.map((word) => word.key));
+  const fresh = materials.vocabulary.filter((word) => !seen.has(wordKey(word)));
+  const review = languageMemory.knownWords
+    .slice()
+    .sort((left, right) => (right.wrong - right.correct) - (left.wrong - left.correct))
+    .map((word) => ({ source: word.source, target: word.target, example: word.example }));
+  return [...fresh, ...review, ...materials.vocabulary].slice(0, count);
+}
+
+function lessonReply(learner, targetLanguage) {
+  const languageMemory = getLearningLanguage(learner, targetLanguage);
+  const materials = tutorMaterials[targetLanguage] || tutorMaterials.kk;
+  const words = chooseLessonWords(languageMemory, targetLanguage, 5);
+  words.forEach((word) => upsertLearningWord(languageMemory, word));
+  const challenge = materials.pronunciation[languageMemory.lessonHistory.length % materials.pronunciation.length]?.expected || words[0]?.example || words[0]?.target;
+  const lessonNumber = languageMemory.lessonHistory.length + 1;
+  languageMemory.lessonHistory.push({
+    id: crypto.randomUUID(),
+    type: "lesson",
+    words: words.map((word) => wordKey(word)),
+    createdAt: new Date().toISOString()
+  });
+  learner.active = {
+    targetLanguage,
+    mode: "lesson",
+    pending: {
+      type: "repeat",
+      expected: challenge,
+      prompt: `Repeat: ${challenge}`
+    },
+    updatedAt: new Date().toISOString()
+  };
+  learner.updatedAt = new Date().toISOString();
+  const lines = words.map((word, index) => `${index + 1}. ${word.target} = ${word.source}. ${word.example}`);
+  return [
+    `${materials.label} lesson ${lessonNumber}.`,
+    ...lines,
+    "",
+    `Speaking practice: repeat this sentence: ${challenge}`
+  ].join("\n");
+}
+
+function chooseQuizWord(languageMemory, targetLanguage) {
+  const materials = tutorMaterials[targetLanguage] || tutorMaterials.kk;
+  const known = languageMemory.knownWords.length ? languageMemory.knownWords : materials.vocabulary.map((word) => upsertLearningWord(languageMemory, word));
+  return known
+    .slice()
+    .sort((left, right) => (right.wrong - right.correct) - (left.wrong - left.correct) || left.correct - right.correct)[0];
+}
+
+function quizReply(learner, targetLanguage) {
+  const languageMemory = getLearningLanguage(learner, targetLanguage);
+  const word = chooseQuizWord(languageMemory, targetLanguage);
+  learner.active = {
+    targetLanguage,
+    mode: "quiz",
+    pending: {
+      type: "translate",
+      source: word.source,
+      expected: word.target,
+      prompt: `How do you say "${word.source}" in ${tutorMaterials[targetLanguage]?.label || targetLanguage}?`
+    },
+    updatedAt: new Date().toISOString()
+  };
+  learner.updatedAt = new Date().toISOString();
+  return learner.active.pending.prompt;
+}
+
+function pronunciationReply(learner, targetLanguage) {
+  const languageMemory = getLearningLanguage(learner, targetLanguage);
+  const materials = tutorMaterials[targetLanguage] || tutorMaterials.kk;
+  const item = materials.pronunciation[languageMemory.lessonHistory.length % materials.pronunciation.length];
+  learner.active = {
+    targetLanguage,
+    mode: "pronunciation",
+    pending: {
+      type: "repeat",
+      focus: item.focus,
+      expected: item.expected,
+      prompt: `Pronunciation practice for ${item.focus}. Repeat: ${item.expected}`
+    },
+    updatedAt: new Date().toISOString()
+  };
+  learner.updatedAt = new Date().toISOString();
+  return learner.active.pending.prompt;
+}
+
+function updateWordScore(languageMemory, expected, correct) {
+  const expectedNormalized = normalizeForMatching(expected);
+  const word = languageMemory.knownWords.find((entry) => normalizeForMatching(entry.target) === expectedNormalized);
+  if (!word) return;
+  if (correct) word.correct += 1;
+  else word.wrong += 1;
+  word.status = correct && word.correct >= 2 ? "known" : "learning";
+  word.updatedAt = new Date().toISOString();
+  languageMemory.stats.correct += correct ? 1 : 0;
+  languageMemory.stats.wrong += correct ? 0 : 1;
+  const weakKey = word.key;
+  languageMemory.weakWords = (languageMemory.weakWords || []).filter((item) => item.key !== weakKey);
+  if (!correct) {
+    languageMemory.weakWords.push({
+      key: weakKey,
+      source: word.source,
+      target: word.target,
+      lastMissedAt: new Date().toISOString()
+    });
+  }
+}
+
+function answerTutorPrompt(learner, targetLanguage, text) {
+  const languageMemory = getLearningLanguage(learner, targetLanguage);
+  const pending = learner.active?.pending;
+  if (!pending) return lessonReply(learner, targetLanguage);
+  const expected = pending.expected;
+  const score = Math.max(scoreWorkflowMatch(text, expected), phraseSimilarity(text, expected));
+  const correct = score >= (pending.type === "repeat" ? 0.72 : 0.78);
+  updateWordScore(languageMemory, expected, correct);
+  learner.active.pending = null;
+  learner.active.updatedAt = new Date().toISOString();
+  learner.updatedAt = new Date().toISOString();
+
+  if (correct) {
+    const next = quizReply(learner, targetLanguage);
+    return `Good. I heard "${text}".\n\nNext: ${next}`;
+  }
+
+  const hint = pending.type === "repeat"
+    ? `Try to match the full sentence. Expected: ${expected}`
+    : `Expected answer: ${expected}`;
+  learner.active.pending = pending;
+  return `Close, but not quite. I heard "${text}". ${hint}`;
+}
+
+async function correctTutorText(text, store, language, context, targetLanguage) {
+  const materials = tutorMaterials[targetLanguage] || tutorMaterials.kk;
+  const promptText = [
+    `You are a concise ${materials.label} language tutor.`,
+    "Correct the user's sentence. Explain the correction in 2-4 short lines.",
+    "If the sentence is already natural, say that and give one better alternative.",
+    `Target language: ${materials.label}. Script: ${materials.script}.`,
+    "",
+    `User sentence: ${text}`
+  ].join("\n");
+  try {
+    const reply = await generateWithOllama(promptText, store, language, { speaker: context.speaker });
+    if (reply) return reply;
+  } catch (error) {
+    console.warn(`[tutor] Correction model failed: ${error.message}`);
+  }
+  return `I can help correct it. Target language: ${materials.label}. Say the sentence again slowly, or type it after "correct this".`;
+}
+
+function tutorProgressReply(learner, targetLanguage) {
+  const languageMemory = getLearningLanguage(learner, targetLanguage);
+  const total = languageMemory.knownWords.length;
+  const weak = languageMemory.weakWords?.length || 0;
+  const correct = languageMemory.stats?.correct || 0;
+  const wrong = languageMemory.stats?.wrong || 0;
+  const level = languageMemory.level || "A1";
+  return `${tutorMaterials[targetLanguage]?.label || targetLanguage} progress: level ${level}. Words introduced: ${total}. Weak words: ${weak}. Quiz score: ${correct} correct, ${wrong} wrong.`;
+}
+
+async function handleTutorTurn(text, store, language = "auto", context = {}) {
+  const learner = getLearner(store, context);
+  const command = parseTutorCommand(text, language, learner);
+  if (!command) return null;
+  const targetLanguage = command.targetLanguage;
+  let reply = "";
+
+  if (command.kind === "stop") {
+    learner.active = null;
+    learner.updatedAt = new Date().toISOString();
+    reply = "Tutor mode stopped.";
+  } else if (command.kind === "progress") {
+    reply = tutorProgressReply(learner, targetLanguage);
+  } else if (command.kind === "quiz") {
+    reply = quizReply(learner, targetLanguage);
+  } else if (command.kind === "pronunciation") {
+    reply = pronunciationReply(learner, targetLanguage);
+  } else if (command.kind === "correct") {
+    reply = await correctTutorText(text, store, language, context, targetLanguage);
+  } else if (command.kind === "answer") {
+    reply = answerTutorPrompt(learner, targetLanguage, text);
+  } else {
+    reply = lessonReply(learner, targetLanguage);
+  }
+
+  await writeStore(store);
+  return {
+    reply,
+    sources: [],
+    mode: "tutor",
+    skipMemoryExtraction: true
+  };
+}
+
 const localReplies = {
   en: {
     notCaught: () => "I did not catch that.",
@@ -1768,6 +2192,9 @@ async function localAssistantReply(text, store, language = "auto", context = {})
   if (matchesPhrase(cleaned, ["what do you remember", "show memory", "list memory"], 0.74)) {
     return summarizeMemory(store);
   }
+
+  const tutorTurn = await handleTutorTurn(cleaned, store, language, context);
+  if (tutorTurn) return tutorTurn;
 
   const profile = parseProfile(cleaned, turnLanguage);
   if (profile) {
@@ -1951,10 +2378,13 @@ async function handleApi(req, res, url) {
     const assistantTurn = await localAssistantReply(body.text, store, requestedLanguage, { speaker });
     const reply = typeof assistantTurn === "string" ? assistantTurn : assistantTurn.reply;
     let extractedMemories = [];
-    try {
-      extractedMemories = await extractDurableMemories(body.text, reply, store, requestedLanguage, speaker);
-    } catch (error) {
-      console.warn(`[memory] Extraction failed: ${error.message}`);
+    const shouldExtractMemory = typeof assistantTurn === "string" || !assistantTurn.skipMemoryExtraction;
+    if (shouldExtractMemory) {
+      try {
+        extractedMemories = await extractDurableMemories(body.text, reply, store, requestedLanguage, speaker);
+      } catch (error) {
+        console.warn(`[memory] Extraction failed: ${error.message}`);
+      }
     }
     sendJson(res, 200, {
       reply,
@@ -1962,6 +2392,7 @@ async function handleApi(req, res, url) {
       memory: await readStore(),
       extractedMemories,
       sources: typeof assistantTurn === "string" ? [] : assistantTurn.sources || [],
+      mode: typeof assistantTurn === "string" ? "assistant" : assistantTurn.mode || "assistant",
       speaker
     });
     return;
