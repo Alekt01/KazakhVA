@@ -1,0 +1,10 @@
+{
+  "name": "voice-ai-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup:speech": "./scripts/setup-local-speech.sh",
+    "start": "node server.mjs"
+  }
+}

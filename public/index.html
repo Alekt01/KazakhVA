@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Voice AI Assistant</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar" aria-label="Session controls">
+        <div>
+          <p class="eyebrow">Free local speech assistant</p>
+          <h1>Voice AI Assistant</h1>
+        </div>
+        <div class="session-actions">
+          <button id="connectButton" class="primary">Start recording</button>
+          <button id="muteButton" class="secondary" disabled>Replay</button>
+          <button id="disconnectButton" class="ghost" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="status-strip" aria-live="polite">
+        <span id="connectionStatus" class="status-pill neutral">Disconnected</span>
+        <span id="apiStatus" class="status-pill neutral">Checking local speech</span>
+        <label class="language-control">
+          <span>Reply</span>
+          <select id="languageSelect" aria-label="Assistant language">
+            <option value="auto">Auto</option>
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+            <option value="kk">Қазақша</option>
+          </select>
+        </label>
+        <span class="status-pill">Whisper STT</span>
+        <span class="status-pill">Ollama brain</span>
+      </section>
+
+      <section class="workspace-grid">
+        <article class="panel voice-panel">
+          <div class="panel-heading">
+            <h2>Conversation</h2>
+            <span id="eventStatus">Idle</span>
+          </div>
+          <div id="conversation" class="conversation" aria-live="polite"></div>
+          <form id="textForm" class="text-command">
+            <input id="textInput" type="text" autocomplete="off" placeholder="Type a local command">
+            <button type="submit">Send</button>
+          </form>
+        </article>
+
+        <aside class="panel memory-panel">
+          <div class="panel-heading">
+            <h2>People</h2>
+            <span id="profileCount">0</span>
+          </div>
+          <form id="profileForm" class="stacked-form">
+            <label>
+              Name
+              <input name="name" type="text" autocomplete="off" required>
+            </label>
+            <label>
+              Language
+              <select name="preferredLanguage">
+                <option value="auto">Auto detect</option>
+                <option value="English">English</option>
+                <option value="Russian">Russian</option>
+                <option value="Kazakh">Kazakh</option>
+              </select>
+            </label>
+            <label>
+              Notes
+              <textarea name="notes" rows="3"></textarea>
+            </label>
+            <button type="submit">Save person</button>
+          </form>
+          <div id="profiles" class="item-list"></div>
+        </aside>
+
+        <aside class="panel workflow-panel">
+          <div class="panel-heading">
+            <h2>Learned Workflows</h2>
+            <span id="workflowCount">0</span>
+          </div>
+          <form id="workflowForm" class="stacked-form">
+            <label>
+              Name
+              <input name="name" type="text" autocomplete="off" required>
+            </label>
+            <label>
+              Trigger phrase
+              <input name="trigger" type="text" autocomplete="off" required>
+            </label>
+            <label>
+              Steps
+              <textarea name="steps" rows="4" placeholder="One step per line" required></textarea>
+            </label>
+            <button type="submit">Save workflow</button>
+          </form>
+          <div id="workflows" class="item-list"></div>
+        </aside>
+
+        <aside class="panel facts-panel">
+          <div class="panel-heading">
+            <h2>Long-Term Memory</h2>
+            <span id="memoryCount">0</span>
+          </div>
+          <div id="memories" class="item-list"></div>
+        </aside>
+      </section>
+
+      <section class="panel logs-panel">
+        <div class="panel-heading">
+          <h2>Local Events</h2>
+          <button id="clearLogButton" class="ghost small">Clear</button>
+        </div>
+        <pre id="eventLog"></pre>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
