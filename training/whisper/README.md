@@ -190,6 +190,46 @@ python transcribe_lora.py my-test.wav \
 
 `base` is the original Whisper output. `adapter` is your Kazakh-tuned checkpoint.
 
+## Benchmark STT Reliability
+
+Before more training, evaluate the current models on a fixed Kazakh test set.
+Create a CSV with this schema:
+
+```csv
+audio_path,expected_text
+/absolute/path/to/audio-001.wav,Сәлем бүгін ауа райы қандай
+/absolute/path/to/audio-002.wav,Мен қазақ тілін үйреніп жүрмін
+```
+
+Then run:
+
+```bash
+cd ~/myva-training/whisper
+source ~/myva-training/.venv/bin/activate
+
+python benchmark_stt.py \
+  --csv /path/to/kazakh_eval.csv \
+  --output-dir runs/stt-benchmark-kazakh \
+  --adapter runs/whisper-small-kk-lora-ksc-forced-1k/checkpoint-3000
+```
+
+The benchmark compares:
+
+- base Hugging Face `openai/whisper-small`
+- the current LoRA adapter
+- `whisper.cpp` `ggml-large-v3-turbo.bin`, only when `whisper-cli` and the model
+  file are available
+
+It writes:
+
+- `results.csv`
+- `wer_report.md`
+- `worst_20_examples.md`
+
+The scorer normalizes Kazakh text by lowercasing, removing punctuation and
+non-Kazakh-Cyrillic characters, and collapsing whitespace. It reports WER, CER,
+average latency, and per-sample word error summaries.
+
 ## Use The Adapter In The App
 
 Start the LoRA STT server on the WSL laptop:
