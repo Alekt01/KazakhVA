@@ -1,125 +1,249 @@
 # Voice AI Assistant
 
-A local-first voice assistant starter that avoids paid speech APIs.
+A local-first voice assistant project that avoids paid speech APIs. It runs a
+browser UI on `localhost`, uses local speech models where possible, and stores
+assistant data in local JSON files.
 
-## What is included
+## Feature Table
 
-- Browser microphone recording to WAV.
-- Local speech-to-text with `whisper.cpp`.
-- Local text-to-speech with Piper.
-- JSON-backed memory for people and learned workflows.
-- A simple local rule-based assistant brain, with optional Ollama support.
-- Read-only web search for current/online questions.
-- Language mode for Auto, English, Russian, and Kazakh.
-- Automatic long-term memory extraction when Ollama is enabled.
-- Optional SpeechBrain ECAPA-TDNN speaker recognition service.
+| Feature | Status | Local storage / dependency | Current limits |
+| --- | --- | --- | --- |
+| Browser voice input | Implemented | Browser microphone, WAV upload to local server | Requires microphone permission and the browser tab open |
+| Speech-to-text | Implemented | `whisper.cpp`; optional Kazakh LoRA STT server | Accuracy depends on model/audio; LoRA server is separate |
+| Text-to-speech | Implemented | Piper voices in `local/models/piper` | Voice quality depends on installed Piper voice |
+| Local assistant brain | Implemented | Rule-based fallback; optional Ollama model | Without Ollama, reasoning is simple |
+| Web search | Implemented | DuckDuckGo HTML search, page excerpts | Read-only; no login, clicking, purchasing, or form submission |
+| Long-term memory | Implemented | `data/store.json` | Automatic extraction requires Ollama; explicit commands are local |
+| Memory control commands | Implemented | `data/store.json` | Personal delete needs recognized speaker or one saved profile |
+| Local reminders | Implemented | `data/reminders.json` | In-app only; no macOS/Windows system notification daemon |
+| Language tutor | Implemented, early version | `data/store.json` under `learning` | Seed English/Kazakh lessons only, not a full curriculum |
+| Speaker recognition | Implemented, experimental | Local voiceprint or optional SpeechBrain ECAPA service | Not biometric-grade authentication |
+| Kazakh STT training scripts | Present | `training/whisper` | Training is manual and hardware-dependent |
 
-## One-time local speech setup
+## Architecture
 
-```sh
-./scripts/setup-local-speech.sh
+```text
+Browser UI
+  public/index.html
+  public/app.js
+  public/styles.css
+        |
+        | localhost HTTP API
+        v
+Node server
+  server.mjs
+        |
+        +-- STT: whisper.cpp or optional LoRA STT server
+        +-- TTS: Piper
+        +-- Brain: local rules or optional Ollama
+        +-- Web search: read-only DuckDuckGo HTML
+        +-- Speaker recognition: local voiceprint or optional ECAPA server
+        |
+        +-- data/store.json       people, workflows, memories, tutor progress
+        +-- data/reminders.json   local timers and reminders
 ```
 
-This installs Homebrew `whisper-cpp`, creates `local/piper-venv`, and downloads:
+Main modules:
 
-- `ggml-base.bin` for multilingual Whisper transcription.
-- `ggml-large-v3-turbo.bin` for better multilingual/Kazakh transcription.
-- English Piper voice: `en_US-lessac-medium`.
-- Russian Piper voice: `ru_RU-irina-medium`.
-- Kazakh Piper voice: `kk_KZ-issai-high`.
+- [server.mjs](/Users/alekt/Documents/MyVA/server.mjs): HTTP server, local assistant flow, speech endpoints, web search, tutor mode, reminders.
+- [lib/memory.mjs](/Users/alekt/Documents/MyVA/lib/memory.mjs): local memory store helpers.
+- [lib/reminders.mjs](/Users/alekt/Documents/MyVA/lib/reminders.mjs): reminder parsing and JSON store helpers.
+- [training/whisper](/Users/alekt/Documents/MyVA/training/whisper): Kazakh Whisper LoRA training/server scripts.
+- [training/speaker](/Users/alekt/Documents/MyVA/training/speaker): optional SpeechBrain ECAPA speaker embedding service.
 
-The downloaded models live in `local/` and are ignored by Git.
+## Setup Steps
 
-## Optional Kazakh LoRA STT
+1. Install or use Node.js.
 
-If the WSL laptop is running the trained Kazakh Whisper LoRA server, start the
-app with:
+   If `node` is available:
 
-```sh
-STT_ENGINE=hybrid-lora LORA_STT_URL=http://127.0.0.1:8765 node server.mjs
+   ```sh
+   node --version
+   ```
+
+   If your shell cannot find Node, this project has been run with the Codex
+   runtime path:
+
+   ```sh
+   /Users/alekt/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node server.mjs
+   ```
+
+2. Install local speech tools and models.
+
+   ```sh
+   ./scripts/setup-local-speech.sh
+   ```
+
+   This installs or prepares:
+
+   - `whisper.cpp`
+   - `ggml-base.bin`
+   - `ggml-large-v3-turbo.bin`
+   - Piper runtime
+   - English Piper voice: `en_US-lessac-medium`
+   - Russian Piper voice: `ru_RU-irina-medium`
+   - Kazakh Piper voice: `kk_KZ-issai-high`
+
+   Downloaded models live in `local/` and are ignored by Git.
+
+3. Start the app.
+
+   Basic local mode:
+
+   ```sh
+   node server.mjs
+   ```
+
+   With Ollama:
+
+   ```sh
+   OLLAMA_MODEL=qwen3:8b node server.mjs
+   ```
+
+   With optional Kazakh LoRA STT server:
+
+   ```sh
+   STT_ENGINE=hybrid-lora LORA_STT_URL=http://127.0.0.1:8765 node server.mjs
+   ```
+
+   With optional SpeechBrain ECAPA speaker service:
+
+   ```sh
+   SPEAKER_EMBEDDING_URL=http://127.0.0.1:8766 node server.mjs
+   ```
+
+   Combined local setup example:
+
+   ```sh
+   STT_ENGINE=hybrid-lora \
+   LORA_STT_URL=http://127.0.0.1:8765 \
+   OLLAMA_MODEL=qwen3:8b \
+   SPEAKER_EMBEDDING_URL=http://127.0.0.1:8766 \
+   node server.mjs
+   ```
+
+4. Open the browser app.
+
+   ```text
+   http://localhost:3000
+   ```
+
+5. Run tests.
+
+   ```sh
+   node --test
+   ```
+
+   If `npm` is available, this also works:
+
+   ```sh
+   npm test
+   ```
+
+## Environment Options
+
+The server reads environment variables from the shell. It does not automatically
+load `.env` files.
+
+Useful options:
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | HTTP port, default `3000` |
+| `WHISPER_CPP_BIN` | Path to `whisper-cli` |
+| `WHISPER_MODEL` | Path to a `whisper.cpp` model |
+| `STT_ENGINE` | `whisper.cpp`, `lora`, or `hybrid-lora` |
+| `LORA_STT_URL` | Optional local/WSL Kazakh LoRA STT server URL |
+| `PIPER_BIN` | Path to Piper executable |
+| `PIPER_VOICE_EN` | English Piper voice path |
+| `PIPER_VOICE_RU` | Russian Piper voice path |
+| `PIPER_VOICE_KK` | Kazakh Piper voice path |
+| `OLLAMA_MODEL` | Enables Ollama responses and model memory extraction |
+| `OLLAMA_URL` | Ollama server URL, default `http://127.0.0.1:11434` |
+| `WEB_SEARCH` | Set `0` to disable web search |
+| `MEMORY_EXTRACTION` | Set `0` to disable automatic memory extraction |
+| `SPEAKER_EMBEDDING_URL` | Optional ECAPA speaker embedding service URL |
+
+## First Things To Try
+
+```text
+Remember me as Alexei
+remember this: I prefer short answers.
+what do you remember about me
+set timer for 5 minutes
+remind me tomorrow at 5 to study Kazakh
+Teach me Kazakh
+Quiz me in Kazakh
+search the web for local AI news
+remember my voice as Alexei
 ```
 
-Then choose `Қазақша` in the app before recording. Auto, English, and Russian
-continue to use the normal multilingual `whisper.cpp` path.
+## Local Memory
 
-If the WSL server is offline, `hybrid-lora` now falls back to local
-`whisper.cpp` instead of failing the whole voice turn.
+The main local memory file is `data/store.json`. It stores:
+
+- saved people
+- learned workflows
+- long-term memory items
+- language tutor progress
+- voice profile metadata and embeddings
+
+Explicit memory commands work without Ollama:
+
+```text
+remember this: I prefer short answers.
+forget this: I prefer short answers.
+what do you remember about me
+delete my memory
+```
+
+Automatic long-term memory extraction only runs when `OLLAMA_MODEL` is set and
+`MEMORY_EXTRACTION` is not `0`. It tries to save stable facts, preferences,
+goals, projects, language preferences, and standing instructions.
+
+The extractor is instructed not to save passwords, API keys, tokens, payment
+data, or other secrets, but you should still avoid saying secrets to the app.
+
+## Local Reminders
+
+Reminders are stored in `data/reminders.json`.
+
+Supported examples:
+
+```text
+set timer for 10 minutes
+set a 5 minute timer to check tea
+remind me tomorrow at 5 to call mom
+remind me tomorrow at 17:30 to study Kazakh
+```
+
+If you say `tomorrow at 5` without `am` or `pm`, the parser treats it as 17:00
+local time. Use `5 am` for morning reminders.
+
+Current limitation: reminders are delivered inside the browser app. The page
+polls `/api/reminders/due` while it is open and speaks due reminders with Piper.
+There is no system notification daemon yet.
 
 ## Languages
 
-Use the language dropdown in the app before recording or typing:
+Use the language dropdown before recording or typing.
 
-- `Auto` lets Whisper detect the spoken language.
-- The assistant listens with Whisper auto-detection so English, Russian, and Kazakh can all be recognized.
-- `English`, `Русский`, and `Қазақша` control the assistant's reply language.
-- `Қазақша` also enables a guarded Kazakh retry pass for STT when the auto transcript does not look Kazakh enough.
-- Kazakh text-to-speech uses the `kk_KZ-issai-high` Piper voice when it has been downloaded by the setup script.
-- Saved workflow triggers use fuzzy matching, so small speech-to-text mistakes
-  usually still trigger the right workflow.
+- `Auto` lets Whisper detect speech language.
+- `English`, `Русский`, and `Қазақша` control the assistant reply language.
+- Kazakh TTS uses `kk_KZ-issai-high` when installed.
+- `hybrid-lora` can use a local Kazakh LoRA STT server for Kazakh-biased transcription and fall back to `whisper.cpp` if configured that way.
 
-You can point the app at stronger local models without changing code:
-
-```sh
-WHISPER_MODEL=local/models/whisper/ggml-small.bin OLLAMA_MODEL=qwen3:8b node server.mjs
-```
-
-To override the Kazakh Piper voice, set:
+You can override the Kazakh Piper voice:
 
 ```sh
 PIPER_VOICE_KK=/path/to/kazakh-voice.onnx node server.mjs
 ```
 
-## Run locally
-
-```sh
-node server.mjs
-```
-
-If your terminal cannot find `node`, use the Codex runtime path:
-
-```sh
-/Users/alekt/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node server.mjs
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-## First things to try
-
-- "Remember me as Alex."
-- "Learn workflow: when I say study setup, open my notes, start a 45 minute timer, and play focus music."
-- "What do you remember?"
-
-## Optional local AI brain
-
-The default brain is deliberately simple and free. If you install Ollama, you can add a local LLM:
-
-```sh
-OLLAMA_MODEL=qwen3:8b node server.mjs
-```
-
-No OpenAI key is needed.
-
-## Long-Term Memory
-
-When `OLLAMA_MODEL` is set, the app automatically extracts durable memory after
-assistant turns. It saves stable facts, preferences, goals, projects, language
-preferences, and standing instructions to `data/store.json`.
-
-It deliberately avoids storing one-off requests, web facts, assistant claims,
-passwords, API keys, tokens, payment data, or other secrets. Disable it with:
-
-```sh
-MEMORY_EXTRACTION=0 OLLAMA_MODEL=qwen3:8b node server.mjs
-```
-
 ## Language Tutor
 
-The app includes a first local tutor mode for English and Kazakh. It stores
-learning progress in `data/store.json` under `learning`.
+Tutor mode currently supports English and Kazakh with a small seed vocabulary in
+`server.mjs`. It tracks introduced words, weak words, quiz score, and active
+lesson/quiz state in `data/store.json`.
 
 Try:
 
@@ -132,36 +256,25 @@ Show my progress
 Stop tutor mode
 ```
 
-Tutor mode tracks:
-
-- target languages per learner
-- introduced words
-- weak words
-- quiz correct/wrong counts
-- active lesson or quiz prompt
-
-The first version ships with a small seed vocabulary in `server.mjs`. Better
-teaching materials can be added later as JSON or Markdown lesson packs.
+This is not yet a full language-learning system. Better lesson packs should be
+added as structured JSON or Markdown materials.
 
 ## Web Search
 
-Web search is enabled by default and uses read-only DuckDuckGo HTML results. Ask
-things like:
+Web search is enabled by default through read-only DuckDuckGo HTML results. The
+assistant can fetch short page excerpts and ask Ollama to answer from those
+results.
 
-- `search the web for local AI news`
-- `what is the latest news about Ollama`
-- `интернеттен ... іздеп бер`
+Examples:
 
-The assistant searches, reads short page excerpts, and asks Ollama to answer
-with source markers like `[1]`. It does not log in, click buttons, submit forms,
-or perform purchases.
+```text
+search the web for local AI news
+what is the latest news about Ollama
+интернеттен жаңалықтарды іздеп бер
+```
 
-The assistant also auto-searches for questions that are likely to need fresh
-information, such as weather, prices, sports scores, software versions,
-schedules, news, and current office holders like presidents, ministers, mayors,
-or CEOs. Stable knowledge questions still use the local Ollama model directly.
-
-To disable web search:
+The app does not log in to websites, click buttons, submit forms, or perform
+purchases. Disable web search with:
 
 ```sh
 WEB_SEARCH=0 node server.mjs
@@ -169,25 +282,67 @@ WEB_SEARCH=0 node server.mjs
 
 ## Voice Recognition
 
-The app includes a first local voiceprint recognizer. It does not send voice data
-to a cloud service. To enroll yourself, record a clear 5-10 second phrase like:
+The app can enroll a local voice profile from a recorded phrase:
 
 ```text
 remember my voice as Alexei
 ```
 
-After that, future recordings are compared with saved voice profiles. If the
-match is strong enough, the assistant adds the recognized speaker to the brain
-prompt and can use that person's saved profile/preferences.
-
-By default, this uses lightweight audio features, so it is not biometric-grade.
-For stronger speaker embeddings, run the SpeechBrain ECAPA service in
-`training/speaker` and start the app with:
+By default, this uses a lightweight local voiceprint. For stronger embeddings,
+run the optional SpeechBrain ECAPA service in `training/speaker` and start the
+app with:
 
 ```sh
 SPEAKER_EMBEDDING_URL=http://127.0.0.1:8766 node server.mjs
 ```
 
 Enroll voices again while ECAPA is enabled so profiles store ECAPA embeddings.
-If the service is offline, the app falls back to the built-in local voiceprint
-engine.
+This feature is useful for personalization, but it should not be treated as
+secure identity verification.
+
+## Privacy
+
+Local by default:
+
+- Browser audio is sent to the local Node server on `localhost`.
+- Speech-to-text uses local `whisper.cpp` unless you configure a local/WSL LoRA STT server.
+- Text-to-speech uses local Piper.
+- People, workflows, memories, tutor progress, and voice profiles are stored in `data/store.json`.
+- Timers and reminders are stored in `data/reminders.json`.
+- `data/store.json`, `data/reminders.json`, `local/`, and `data/tmp/` are ignored by Git.
+
+Optional network behavior:
+
+- Web search contacts DuckDuckGo and fetched result pages.
+- Ollama calls go to `OLLAMA_URL`, normally `http://127.0.0.1:11434`.
+- The optional SpeechBrain/LoRA services may run on another local machine if you point the app there.
+
+Secrets:
+
+- Do not commit `.env`.
+- Do not store API keys, passwords, tokens, or payment details in memory.
+- The app is a local project assistant, not a hardened secrets manager.
+
+## Roadmap
+
+Near-term:
+
+- Add a visible reminders panel with edit/delete controls.
+- Add structured language lesson packs outside `server.mjs`.
+- Add tests for reminder API behavior and memory command handling.
+- Add import/export tools for local memory.
+- Improve Kazakh STT evaluation with a repeatable test set.
+
+Later:
+
+- Background reminder worker or OS notifications.
+- Better workflow execution with explicit permission gates.
+- More robust multilingual tutor feedback.
+- Speaker profile management UI.
+- Safer configuration loading and startup diagnostics.
+
+Not planned yet:
+
+- Cloud account sync.
+- Website automation that logs in or performs purchases.
+- Treating voice recognition as security authentication.

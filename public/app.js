@@ -439,6 +439,9 @@ async function runLocalAssistantTurn(text, language = selectedLanguage(), speake
   if (response.mode === "tutor") {
     appendLog({ tutorMode: true });
   }
+  if (response.mode === "reminder" && response.reminder) {
+    appendLog({ reminderSaved: response.reminder });
+  }
   state.lastReply = response.reply;
   state.lastReplyLanguage = response.language || language;
   appendMessage("assistant", response.reply);
@@ -498,6 +501,21 @@ async function checkHealth() {
   }
 }
 
+async function pollDueReminders() {
+  try {
+    const payload = await apiJson("/api/reminders/due");
+    const dueReminders = payload.reminders || [];
+    for (const reminder of dueReminders) {
+      const text = `Reminder: ${reminder.text}`;
+      appendMessage("assistant", text);
+      appendLog({ reminderDue: reminder });
+      await speakText(text, selectedLanguage());
+    }
+  } catch (error) {
+    appendLog({ reminderPollError: describeError(error) });
+  }
+}
+
 refs.recordButton.textContent = "Start recording";
 refs.stopButton.textContent = "Stop recording";
 refs.replayButton.textContent = "Replay";
@@ -549,3 +567,5 @@ refs.workflowForm.addEventListener("submit", async (event) => {
 
 await checkHealth();
 await refreshMemory();
+await pollDueReminders();
+setInterval(pollDueReminders, 15000);

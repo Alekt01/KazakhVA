@@ -1,5 +1,6 @@
 .env
 data/store.json
+data/reminders.json
 data/tmp/
 local/
 .DS_Store

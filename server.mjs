@@ -3,12 +3,32 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
+import {
+  containsSensitiveMemory,
+  createMemoryStore,
+  deleteMemories,
+  normalizeMemoryKind,
+  normalizeMemoryTags,
+  summarizeMemory as summarizeStoreMemory,
+  upsertByName,
+  upsertMemory
+} from "./lib/memory.mjs";
+import {
+  addReminder,
+  createReminderStore,
+  formatLocalDateTime,
+  parseReminderCommand,
+  takeDueReminders
+} from "./lib/reminders.mjs";
 
 const rootDir = process.cwd();
 const publicDir = resolve(rootDir, "public");
 const dataDir = resolve(rootDir, "data");
 const tmpDir = join(dataDir, "tmp");
 const storePath = join(dataDir, "store.json");
+const remindersPath = join(dataDir, "reminders.json");
+const { readStore, writeStore } = createMemoryStore({ dataDir, storePath });
+const { readReminders, writeReminders } = createReminderStore({ dataDir, remindersPath });
 const port = Number(process.env.PORT || 3000);
 const loraSttUrl = process.env.LORA_STT_URL || process.env.KAZAKH_STT_URL || "";
 const sttEngine = normalizeSttEngine(process.env.STT_ENGINE || (loraSttUrl ? "hybrid-lora" : "whisper.cpp"));
@@ -86,15 +106,6 @@ const mimeTypes = {
   ".wav": "audio/wav"
 };
 
-const defaultStore = {
-  profiles: [],
-  workflows: [],
-  memories: [],
-  learning: {
-    learners: []
-  }
-};
-
 function findCommand(candidates) {
   for (const candidate of candidates) {
     if (!candidate) continue;
@@ -156,45 +167,6 @@ async function readJsonBody(req) {
   const raw = await readBody(req, 2 * 1024 * 1024);
   if (!raw.length) return {};
   return JSON.parse(raw.toString("utf8"));
-}
-
-function freshDefaultStore() {
-  return structuredClone(defaultStore);
-}
-
-function normalizeStoreShape(store = {}) {
-  const defaults = freshDefaultStore();
-  const normalized = {
-    ...defaults,
-    ...store,
-    profiles: Array.isArray(store.profiles) ? store.profiles : [],
-    workflows: Array.isArray(store.workflows) ? store.workflows : [],
-    memories: Array.isArray(store.memories) ? store.memories : [],
-    learning: {
-      ...defaults.learning,
-      ...(store.learning && typeof store.learning === "object" ? store.learning : {})
-    }
-  };
-  if (!Array.isArray(normalized.learning.learners)) normalized.learning.learners = [];
-  return normalized;
-}
-
-async function readStore() {
-  await mkdir(dataDir, { recursive: true });
-  try {
-    const raw = await readFile(storePath, "utf8");
-    return normalizeStoreShape(JSON.parse(raw));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    const store = freshDefaultStore();
-    await writeStore(store);
-    return store;
-  }
-}
-
-async function writeStore(store) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(storePath, JSON.stringify(store, null, 2), "utf8");
 }
 
 function cleanText(value, fallback = "") {
@@ -768,23 +740,6 @@ async function identifySpeaker(store, audioBuffer) {
   };
 }
 
-function upsertByName(items, item) {
-  const normalized = item.name.toLocaleLowerCase();
-  const existingIndex = items.findIndex((entry) => entry.name.toLocaleLowerCase() === normalized);
-  if (existingIndex >= 0) {
-    items[existingIndex] = { ...items[existingIndex], ...item, updatedAt: new Date().toISOString() };
-    return items[existingIndex];
-  }
-  const next = {
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...item
-  };
-  items.push(next);
-  return next;
-}
-
 function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
@@ -1028,24 +983,7 @@ async function synthesizeSpeech(text, language = "auto") {
 }
 
 function summarizeMemory(store) {
-  const profiles = store.profiles.length
-    ? store.profiles.map((profile) => `${profile.name}: ${profile.preferredLanguage || "auto"}; ${profile.notes || "no notes"}`).join("\n")
-    : "No people saved yet.";
-  const workflows = store.workflows.length
-    ? store.workflows.map((workflow) => `${workflow.name}: say "${workflow.trigger}" -> ${workflow.steps.join(" -> ")}`).join("\n")
-    : "No workflows saved yet.";
-  const memories = store.memories?.length
-    ? store.memories
-        .slice(-20)
-        .map((memory) => {
-          const owner = memory.speakerName ? `${memory.speakerName}: ` : "";
-          const tags = memory.tags?.length ? ` [${memory.tags.join(", ")}]` : "";
-          return `${owner}${memory.text}${tags}`;
-        })
-        .join("\n")
-    : "No long-term memories saved yet.";
-  const learning = summarizeLearning(store);
-  return `People:\n${profiles}\n\nWorkflows:\n${workflows}\n\nLong-term memories:\n${memories}\n\nLearning:\n${learning}`;
+  return summarizeStoreMemory(store, { summarizeLearning });
 }
 
 function summarizeLearning(store) {
@@ -1089,23 +1027,6 @@ function parseJsonishArray(value) {
     }
   }
   return [];
-}
-
-function normalizeMemoryKind(value) {
-  const kind = String(value || "").trim().toLocaleLowerCase();
-  if (["preference", "goal", "fact", "project", "language", "person", "instruction"].includes(kind)) return kind;
-  return "fact";
-}
-
-function normalizeMemoryTags(tags) {
-  if (!Array.isArray(tags)) return [];
-  return [...new Set(tags.map((tag) => normalizeForMatching(tag)).filter(Boolean))]
-    .slice(0, 6)
-    .map((tag) => tag.slice(0, 32));
-}
-
-function containsSensitiveMemory(text) {
-  return /\b(password|passcode|api key|apikey|secret|token|private key|credit card|card number|ssn|social security)\b/i.test(text);
 }
 
 function explicitMemoryKind(text) {
@@ -1154,7 +1075,7 @@ function normalizeMemoryCandidate(candidate, context = {}) {
   return {
     kind: normalizeMemoryKind(candidate?.kind),
     text,
-    tags: normalizeMemoryTags(candidate?.tags),
+    tags: normalizeMemoryTags(candidate?.tags, normalizeForMatching),
     confidence: Number.isFinite(confidence) ? Math.min(Math.max(confidence, 0), 1) : 0.75,
     speakerName: context.speaker?.recognized ? cleanProfileName(context.speaker.name) : null,
     language: languageForTurn(context.userText || text, context.language || "auto"),
@@ -1162,36 +1083,240 @@ function normalizeMemoryCandidate(candidate, context = {}) {
   };
 }
 
-function sameMemoryOwner(left, right) {
-  if (!left?.speakerName || !right?.speakerName) return true;
-  return normalizeForMatching(left.speakerName) === normalizeForMatching(right.speakerName);
+function memoryControlTurn(reply) {
+  return {
+    reply,
+    sources: [],
+    mode: "memory",
+    skipMemoryExtraction: true
+  };
 }
 
-function upsertMemory(store, candidate) {
-  if (!store.memories) store.memories = [];
-  const existing = store.memories.find(
-    (memory) => sameMemoryOwner(memory, candidate) && phraseSimilarity(memory.text, candidate.text) >= 0.9
-  );
-  const now = new Date().toISOString();
-  if (existing) {
-    existing.kind = candidate.kind || existing.kind;
-    existing.text = candidate.text.length > existing.text.length ? candidate.text : existing.text;
-    existing.tags = [...new Set([...(existing.tags || []), ...(candidate.tags || [])])].slice(0, 8);
-    existing.confidence = Math.max(Number(existing.confidence || 0), candidate.confidence);
-    existing.speakerName = existing.speakerName || candidate.speakerName || null;
-    existing.language = candidate.language || existing.language || "auto";
-    existing.updatedAt = now;
-    return { memory: existing, created: false };
+function parseMemoryControlCommand(text) {
+  const cleaned = cleanText(text);
+  const normalized = normalizeForMatching(cleaned);
+  if (!normalized) return null;
+
+  if (matchesPhrase(cleaned, ["what do you remember about me", "what do you know about me", "show my memory"], 0.82)) {
+    return { kind: "show-personal" };
   }
-  const memory = {
-    id: crypto.randomUUID(),
-    createdAt: now,
-    updatedAt: now,
-    ...candidate
+  if (matchesPhrase(cleaned, ["delete my memory", "erase my memory", "clear my memory", "forget everything about me"], 0.82)) {
+    return { kind: "delete-personal" };
+  }
+
+  const rememberPatterns = [
+    /^(?:please\s+)?(?:remember|save)\s+this\s*:?\s*(.*)$/iu,
+    /^(.+?)\s*,?\s*(?:remember|save)\s+this$/iu
+  ];
+  for (const pattern of rememberPatterns) {
+    const match = cleaned.match(pattern);
+    if (match) return { kind: "remember", content: cleanText(match[1]) };
+  }
+
+  const forgetPatterns = [
+    /^(?:please\s+)?(?:forget|delete)\s+this\s*:?\s*(.*)$/iu,
+    /^(?:please\s+)?forget\s+that\s+(.+)$/iu,
+    /^(.+?)\s*,?\s*forget\s+this$/iu
+  ];
+  for (const pattern of forgetPatterns) {
+    const match = cleaned.match(pattern);
+    if (match) return { kind: "forget", content: cleanText(match[1]) };
+  }
+
+  return null;
+}
+
+function memoryOwnerScope(store, context = {}) {
+  const profiles = Array.isArray(store.profiles) ? store.profiles : [];
+  const recognizedName = context.speaker?.recognized ? cleanProfileName(context.speaker.name) : "";
+  if (recognizedName) {
+    return {
+      confident: true,
+      name: recognizedName,
+      key: `speaker:${normalizeForMatching(recognizedName)}`,
+      includeUnowned: profiles.length <= 1
+    };
+  }
+  if (profiles.length === 1) {
+    const name = cleanProfileName(profiles[0].name);
+    return {
+      confident: true,
+      name,
+      key: `speaker:${normalizeForMatching(name)}`,
+      includeUnowned: true
+    };
+  }
+  if (profiles.length === 0) {
+    return {
+      confident: true,
+      name: null,
+      key: "default",
+      includeUnowned: true
+    };
+  }
+  return {
+    confident: false,
+    name: null,
+    key: null,
+    includeUnowned: false
   };
-  store.memories.push(memory);
-  if (store.memories.length > 200) store.memories.splice(0, store.memories.length - 200);
-  return { memory, created: true };
+}
+
+function profileMatchesScope(profile, scope) {
+  return Boolean(scope.name && normalizeForMatching(profile.name) === normalizeForMatching(scope.name));
+}
+
+function memoryMatchesScope(memory, scope) {
+  if (!scope.name) return scope.includeUnowned && !memory.speakerName;
+  if (!memory.speakerName) return scope.includeUnowned;
+  return normalizeForMatching(memory.speakerName) === normalizeForMatching(scope.name);
+}
+
+function learnerMatchesScope(learner, scope) {
+  if (scope.key && learner.key === scope.key) return true;
+  return Boolean(scope.includeUnowned && learner.key === "default");
+}
+
+function scopedMemories(store, scope) {
+  return (Array.isArray(store.memories) ? store.memories : []).filter((memory) => memoryMatchesScope(memory, scope));
+}
+
+function formatPersonalMemory(store, scope) {
+  if (!scope.confident) {
+    return "I have more than one local profile. I need to recognize your voice before I can show only your memory.";
+  }
+
+  const profiles = scope.name ? store.profiles.filter((profile) => profileMatchesScope(profile, scope)) : [];
+  const memories = scopedMemories(store, scope);
+  const learners = ensureLearningStore(store).learners.filter((learner) => learnerMatchesScope(learner, scope));
+  const lines = [];
+
+  for (const profile of profiles) {
+    lines.push(`Profile: ${profile.name}. Preferred language: ${profile.preferredLanguage || "auto"}. ${profile.notes || "No notes."}`);
+    if (profile.voice?.engine) lines.push(`Voice: enrolled locally with ${profile.voice.engine}.`);
+  }
+
+  if (memories.length) {
+    lines.push("Long-term memory:");
+    for (const memory of memories.slice(-12)) {
+      const tags = memory.tags?.length ? ` [${memory.tags.join(", ")}]` : "";
+      lines.push(`- ${memory.text}${tags}`);
+    }
+  }
+
+  for (const learner of learners) {
+    const languagesSummary = Object.values(learner.languages || {}).map((languageMemory) => {
+      const material = tutorMaterials[languageMemory.targetLanguage] || { label: languageMemory.targetLanguage };
+      return `${material.label}: ${languageMemory.knownWords?.length || 0} words, ${languageMemory.weakWords?.length || 0} weak`;
+    });
+    if (languagesSummary.length) lines.push(`Learning: ${languagesSummary.join("; ")}.`);
+  }
+
+  if (!lines.length) return "I do not have local memory about you yet.";
+  return lines.join("\n");
+}
+
+async function rememberThisMemory(content, store, language, context) {
+  if (!content) {
+    return memoryControlTurn('Tell me what to remember after the command. Example: "remember this: I prefer short answers."');
+  }
+  const normalized = normalizeMemoryCandidate(
+    {
+      kind: explicitMemoryKind(content),
+      text: content,
+      tags: ["explicit"],
+      confidence: 0.95
+    },
+    {
+      language,
+      speaker: context.speaker,
+      userText: content
+    }
+  );
+  if (!normalized) {
+    return memoryControlTurn("I did not save that. It is too short or looks like sensitive information.");
+  }
+  const result = upsertMemory(store, normalized, { phraseSimilarity, normalizeForMatching });
+  await writeStore(store);
+  return memoryControlTurn(`${result.created ? "Saved" : "Updated"} locally: ${result.memory.text}`);
+}
+
+async function forgetThisMemory(content, store, context) {
+  if (!content) {
+    return memoryControlTurn('Tell me what to forget after the command. Example: "forget this: I prefer short answers."');
+  }
+  const scope = memoryOwnerScope(store, context);
+  const candidates = scopedMemories(store, scope);
+  const best = candidates
+    .map((memory) => ({
+      memory,
+      score: Math.max(phraseSimilarity(memory.text, content), scoreWorkflowMatch(content, memory.text))
+    }))
+    .sort((left, right) => right.score - left.score)[0];
+
+  if (!best || best.score < 0.54) {
+    return memoryControlTurn(`I could not find a close local memory matching: ${content}`);
+  }
+
+  const removed = deleteMemories(store, (memory) => memory.id === best.memory.id);
+  await writeStore(store);
+  return memoryControlTurn(`Forgot locally: ${removed[0].text}`);
+}
+
+async function deletePersonalMemory(store, context) {
+  const scope = memoryOwnerScope(store, context);
+  if (!scope.confident) {
+    return memoryControlTurn("I have more than one local profile. I need to recognize your voice before I can delete only your memory.");
+  }
+
+  const removedMemories = deleteMemories(store, (memory) => memoryMatchesScope(memory, scope));
+  const profileCountBefore = store.profiles.length;
+  if (scope.name) store.profiles = store.profiles.filter((profile) => !profileMatchesScope(profile, scope));
+  const removedProfiles = profileCountBefore - store.profiles.length;
+  const learning = ensureLearningStore(store);
+  const learnerCountBefore = learning.learners.length;
+  learning.learners = learning.learners.filter((learner) => !learnerMatchesScope(learner, scope));
+  const removedLearners = learnerCountBefore - learning.learners.length;
+  await writeStore(store);
+
+  return memoryControlTurn(
+    `Deleted local memory: ${removedProfiles} profile, ${removedMemories.length} long-term memories, ${removedLearners} learning profiles.`
+  );
+}
+
+async function handleMemoryControlTurn(text, store, language = "auto", context = {}) {
+  const command = parseMemoryControlCommand(text);
+  if (!command) return null;
+  if (command.kind === "show-personal") return memoryControlTurn(formatPersonalMemory(store, memoryOwnerScope(store, context)));
+  if (command.kind === "delete-personal") return deletePersonalMemory(store, context);
+  if (command.kind === "remember") return rememberThisMemory(command.content, store, language, context);
+  if (command.kind === "forget") return forgetThisMemory(command.content, store, context);
+  return null;
+}
+
+function reminderControlTurn(reply, reminder = null) {
+  return {
+    reply,
+    reminder,
+    sources: [],
+    mode: "reminder",
+    skipMemoryExtraction: true
+  };
+}
+
+async function handleReminderTurn(text) {
+  const command = parseReminderCommand(text);
+  if (!command) return null;
+  if (!command.ok) return reminderControlTurn(command.error);
+
+  const reminderStore = await readReminders();
+  const reminder = addReminder(reminderStore, command);
+  await writeReminders(reminderStore);
+  const due = formatLocalDateTime(reminder.dueAt);
+  const reply = reminder.type === "timer"
+    ? `Timer set. Due at ${due}.`
+    : `Reminder saved locally for ${due}: ${reminder.text}`;
+  return reminderControlTurn(reply, reminder);
 }
 
 async function extractDurableMemories(userText, assistantReply, store, language = "auto", speaker = null) {
@@ -1209,7 +1334,7 @@ async function extractDurableMemories(userText, assistantReply, store, language 
       userText: cleanedUserText
     });
     if (!normalized) continue;
-    const result = upsertMemory(store, normalized);
+    const result = upsertMemory(store, normalized, { phraseSimilarity, normalizeForMatching });
     saved.push(result.memory);
     storeChanged = true;
   }
@@ -1280,7 +1405,7 @@ async function extractDurableMemories(userText, assistantReply, store, language 
       userText: cleanedUserText
     });
     if (!normalized) continue;
-    const result = upsertMemory(store, normalized);
+    const result = upsertMemory(store, normalized, { phraseSimilarity, normalizeForMatching });
     saved.push(result.memory);
     storeChanged = true;
   }
@@ -2189,6 +2314,12 @@ async function localAssistantReply(text, store, language = "auto", context = {})
   const turnLanguage = languageForTurn(cleaned, language);
   if (!cleaned) return localReply(turnLanguage, "notCaught");
 
+  const reminderControl = await handleReminderTurn(cleaned);
+  if (reminderControl) return reminderControl;
+
+  const memoryControl = await handleMemoryControlTurn(cleaned, store, language, context);
+  if (memoryControl) return memoryControl;
+
   if (matchesPhrase(cleaned, ["what do you remember", "show memory", "list memory"], 0.74)) {
     return summarizeMemory(store);
   }
@@ -2287,6 +2418,22 @@ async function handleApi(req, res, url) {
       return;
     }
     sendJson(res, 200, await webSearch(query));
+    return;
+  }
+
+  if (pathname === "/api/reminders" && req.method === "GET") {
+    sendJson(res, 200, await readReminders());
+    return;
+  }
+
+  if (pathname === "/api/reminders/due" && req.method === "GET") {
+    const reminderStore = await readReminders();
+    const due = takeDueReminders(reminderStore);
+    if (due.length) await writeReminders(reminderStore);
+    sendJson(res, 200, {
+      reminders: due,
+      store: reminderStore
+    });
     return;
   }
 
@@ -2393,6 +2540,7 @@ async function handleApi(req, res, url) {
       extractedMemories,
       sources: typeof assistantTurn === "string" ? [] : assistantTurn.sources || [],
       mode: typeof assistantTurn === "string" ? "assistant" : assistantTurn.mode || "assistant",
+      reminder: typeof assistantTurn === "string" ? null : assistantTurn.reminder || null,
       speaker
     });
     return;

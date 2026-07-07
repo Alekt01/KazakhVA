@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "setup:speech": "./scripts/setup-local-speech.sh",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test": "node --test"
   }
 }
